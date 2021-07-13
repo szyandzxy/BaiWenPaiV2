@@ -14,7 +14,7 @@ def main():
     card_url = 'https://ssr.res.netease.com/pc/zt/20191112204330/data/card/'
     dir_dict = {}
 
-    response = s.get('https://ssr.res.netease.com/pc/zt/20191112204330/js/index_d3b4b764.js')
+    response = s.get('https://ssr.res.netease.com/pc/zt/20191112204330/js/index_c950513e.js')
     start_subscript = response.text.find('),d=[') + 4
     end_subscript = response.text.find(';function u(e')
     data = response.text[start_subscript:end_subscript]
