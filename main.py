@@ -1,6 +1,7 @@
 from os import mkdir, path
 import requests
 import demjson
+from lxml import etree
 
 
 def get_pic(pic_url, pic_path):
@@ -14,7 +15,10 @@ def main():
     card_url = 'https://ssr.res.netease.com/pc/zt/20191112204330/data/card/'
     dir_dict = {}
 
-    response = s.get('https://ssr.res.netease.com/pc/zt/20191112204330/js/index_c950513e.js')
+    resp_html = s.get('https://ssr.163.com/cardmaker/').text
+    js_url = etree.HTML(resp_html).xpath('/html/body/script[5]/@src')[0]
+
+    response = s.get(js_url)
     start_subscript = response.text.find('),d=[') + 4
     end_subscript = response.text.find(';function u(e')
     data = response.text[start_subscript:end_subscript]
