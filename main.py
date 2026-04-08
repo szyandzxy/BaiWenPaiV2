@@ -8,70 +8,126 @@ from aiofiles.os import path, mkdir
 from lxml import etree
 
 
-# 下载图片
+# 下载图片，失败时打印错误但不中断整体任务
 async def down_pic(session, pic_url, pic_path):
-    print(pic_url, pic_path)
-    async with session.get(pic_url) as resp:
-        content = await resp.read()
-    async with aiofiles.open(pic_path, 'wb') as f:
-        await f.write(content)
+    try:
+        async with session.get(pic_url) as resp:
+            if resp.status != 200:
+                print(f'[跳过] {pic_url} -> HTTP {resp.status}')
+                return
+            content = await resp.read()
+        async with aiofiles.open(pic_path, 'wb') as f:
+            await f.write(content)
+        print(f'[OK] {pic_path}')
+    except Exception as e:
+        print(f'[错误] {pic_url} -> {e}')
+
+
+# 从页面自动获取最新 JS 链接（兼容官网改版）
+async def get_js_url(session):
+    async with session.get('https://ssr.163.com/cardmaker/') as resp:
+        html = await resp.text()
+    # 取最后一个 ssr.res.netease.com 的 JS
+    urls = re.findall(r'https://ssr\.res\.netease\.com[^\s\'"]+\.js', html)
+    if not urls:
+        raise RuntimeError('未找到卡牌数据 JS 链接')
+    # index JS 通常是最后一个（不含 vendor）
+    for u in reversed(urls):
+        if 'vendor' not in u:
+            return u
+    return urls[-1]
+
+
+# 从 JS 中提取卡牌数据列表
+def extract_card_data(js_text):
+    # 多种正则兼容不同版本
+    patterns = [
+        r'\(n\),d=(.*?);function u',
+        r'\bn\b,d=(\[.*?\]),\w=',
+        r',d=(\[{.*?}\]),',
+    ]
+    for pat in patterns:
+        m = re.search(pat, js_text, re.DOTALL)
+        if m:
+            try:
+                data = chompjs.parse_js_object(m.group(1))
+                if isinstance(data, list) and len(data) > 10:
+                    return data
+            except Exception:
+                continue
+    raise RuntimeError('无法从 JS 中解析卡牌数据，请检查正则是否需要更新')
 
 
 # 返回卡牌图片 url 和对应存储目录
 async def get_card_info(session):
-    card_info = []  # 将会按照 [(pic1_url, pic1_path), (pic2_url, pic2_path) ...] 存储
-    dir_dict = {}  # 式神 role 和 名字对应字典，{card_role: card_name}，为方便式神所属牌放置对应目录
+    card_info = []
+    dir_dict = {}  # {card_role(int): card_name(str)}
 
-    avatar_url = 'https://ssr.res.netease.com/pc/zt/20191112204330/data/shishen_avatar/'
-    card_url = 'https://ssr.res.netease.com/pc/zt/20191112204330/data/card/'
+    avatar_url = 'https://ssr.res.netease.com/pc/zt/20191112204330/data/shishen_avatar'
+    card_url   = 'https://ssr.res.netease.com/pc/zt/20191112204330/data/card'
 
-    # 获取 js 链接
-    async with session.get('https://ssr.163.com/cardmaker/') as resp:
-        html = await resp.text()
-    js_url = etree.HTML(html).xpath('/html/body/script[5]/@src')[0]
+    js_url = await get_js_url(session)
+    print(f'[JS] {js_url}')
 
-    # 取出 js 中的卡片数据
     async with session.get(js_url) as resp:
-        html = await resp.text()
-    data_str = re.findall(r"\(n\),d=(.*?);function u", html)[0]
+        js_text = await resp.text()
 
-    data = chompjs.parse_js_object(data_str)  # 使用 chompjs 解析 javascript objects
+    data = extract_card_data(js_text)
+    print(f'[数据] 共 {len(data)} 条卡牌数据')
 
     for card in data:
-        card_id = int(card['id'])  # 有的是 float 类型，需要转成 int 才能获取到图片
-        card_name = card['name']
-        card_role = int(card['role'])  # 有的是 string，统一成 int
-        card_type = card['type']
-        # print(card_id, card_name, card_role, card_type)
+        try:
+            card_id   = int(card['id'])
+            card_name = card['name'].replace('/', '-')
+            card_role = int(card['role'])
+            card_type = card['type']
+        except (KeyError, ValueError, TypeError):
+            continue
 
-        card_name = card_name.replace('/', '-')  # 处理名字中的斜杠，避免写入文件出错
-
-        # 按照卡片类型获取图片 url 和对应保存路径
-        # 如果是卡片类型是[式神]，创建文件夹
         if card_type == '式神':
-            if not await path.exists(f'./pic/{card_name}'):
-                await mkdir(f'./pic/{card_name}')
+            # 建立式神目录，记录 role→name 映射
+            dir_path = f'./pic/{card_name}'
+            if not await path.exists(dir_path):
+                await mkdir(dir_path)
             dir_dict[card_role] = card_name
-            pic_url = f'{avatar_url}/{card_id}.png'
-            pic_path = f'./pic/{dir_dict[card_role]}/avatar.png'
 
-        # 如果卡片类型是（[战斗]、[形态]、[法术]...）
+            # 式神头像（小图）
+            card_info.append((
+                f'{avatar_url}/{card_id}.png',
+                f'./pic/{card_name}/avatar.png',
+            ))
+            # 式神立绘（与普通卡牌同路径，即 data/card/{id}.png）
+            card_info.append((
+                f'{card_url}/{card_id}.png',
+                f'./pic/{card_name}/card.png',
+            ))
         else:
-            pic_url = f'{card_url}/{card_id}.png'
-            pic_path = f'./pic/{dir_dict[card_role]}/{card_name}.png'
-
-        card_info.append((pic_url, pic_path))
+            if card_role not in dir_dict:
+                # 式神目录还未建立（数据顺序问题），跳过
+                print(f'[警告] role={card_role} 目录未建立，跳过 {card_name}')
+                continue
+            card_info.append((
+                f'{card_url}/{card_id}.png',
+                f'./pic/{dir_dict[card_role]}/{card_name}.png',
+            ))
 
     return card_info
 
 
 async def main():
-    tasks = []
+    # 并发数限制，避免对服务器造成压力
+    sem = asyncio.Semaphore(20)
+
+    async def down_with_sem(session, url, path_):
+        async with sem:
+            await down_pic(session, url, path_)
+
     async with aiohttp.ClientSession() as session:
         card_info = await get_card_info(session)
-        for (pic_url, pic_path) in card_info:
-            tasks.append(down_pic(session, pic_url, pic_path))
+        print(f'[任务] 共 {len(card_info)} 张图片待下载')
+        tasks = [down_with_sem(session, url, p) for url, p in card_info]
         await asyncio.gather(*tasks)
+    print('[完成]')
 
 
 if __name__ == '__main__':
