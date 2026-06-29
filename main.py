@@ -5,7 +5,6 @@ import chompjs
 import re
 
 from aiofiles.os import path, mkdir
-from lxml import etree
 
 
 # 下载图片，失败时打印错误但不中断整体任务
@@ -40,22 +39,38 @@ async def get_js_url(session):
 
 # 从 JS 中提取卡牌数据列表
 def extract_card_data(js_text):
-    # 多种正则兼容不同版本
-    patterns = [
-        r'\(n\),d=(.*?);function u',
-        r'\bn\b,d=(\[.*?\]),\w=',
-        r',d=(\[{.*?}\]),',
-    ]
-    for pat in patterns:
-        m = re.search(pat, js_text, re.DOTALL)
-        if m:
-            try:
-                data = chompjs.parse_js_object(m.group(1))
-                if isinstance(data, list) and len(data) > 10:
-                    return data
-            except Exception:
-                continue
-    raise RuntimeError('无法从 JS 中解析卡牌数据，请检查正则是否需要更新')
+    # 新版 JS 数据格式：内嵌大数组 [{id:...,name:...,role:...,type:...},...]
+    # 直接定位 [{id: 开头，避免正则回溯
+    idx = js_text.find('[{id:')
+    if idx == -1:
+        # 兼容旧版正则（兜底）
+        patterns = [
+            r'\(n\),d=(.*?);function u',
+            r'\bn\b,d=(\[.*?\]),\w=',
+            r',d=(\[{.*?}\]),',
+        ]
+        for pat in patterns:
+            m = re.search(pat, js_text, re.DOTALL)
+            if m:
+                try:
+                    data = chompjs.parse_js_object(m.group(1))
+                    if isinstance(data, list) and len(data) > 10:
+                        return data
+                except Exception:
+                    continue
+        raise RuntimeError('无法从 JS 中解析卡牌数据，请检查正则是否需要更新')
+    # 找匹配的 ]
+    depth = 0
+    for i in range(idx, len(js_text)):
+        c = js_text[i]
+        if c == '[':
+            depth += 1
+        elif c == ']':
+            depth -= 1
+            if depth == 0:
+                arr_text = js_text[idx:i+1]
+                return chompjs.parse_js_object(arr_text)
+    raise RuntimeError('无法找到卡牌数据数组结尾')
 
 
 # 返回卡牌图片 url 和对应存储目录
