@@ -76,10 +76,12 @@ def extract_card_data(js_text):
 # 返回卡牌图片 url 和对应存储目录
 async def get_card_info(session):
     card_info = []
-    dir_dict = {}  # {card_role(int): card_name(str)}
+    dir_dict = {}   # {card_role(int): card_name(str)}
+    used_names = {} # {card_role: set(name)} 用于检测同名卡牌
 
     avatar_url = 'https://ssr.res.netease.com/pc/zt/20191112204330/data/shishen_avatar'
     card_url   = 'https://ssr.res.netease.com/pc/zt/20191112204330/data/card'
+    base_dir   = './pic'
 
     js_url = await get_js_url(session)
     print(f'[JS] {js_url}')
@@ -101,7 +103,7 @@ async def get_card_info(session):
 
         if card_type == '式神':
             # 建立式神目录，记录 role→name 映射
-            dir_path = f'./pic/{card_name}'
+            dir_path = f'{base_dir}/{card_name}'
             if not await path.exists(dir_path):
                 await mkdir(dir_path)
             dir_dict[card_role] = card_name
@@ -109,21 +111,29 @@ async def get_card_info(session):
             # 式神头像（小图）
             card_info.append((
                 f'{avatar_url}/{card_id}.png',
-                f'./pic/{card_name}/avatar.png',
+                f'{base_dir}/{card_name}/avatar.png',
             ))
             # 式神立绘（与普通卡牌同路径，即 data/card/{id}.png）
             card_info.append((
                 f'{card_url}/{card_id}.png',
-                f'./pic/{card_name}/card.png',
+                f'{base_dir}/{card_name}/card.png',
             ))
         else:
             if card_role not in dir_dict:
                 # 式神目录还未建立（数据顺序问题），跳过
                 print(f'[警告] role={card_role} 目录未建立，跳过 {card_name}')
                 continue
+            # 同名卡牌加 _id 后缀区分
+            if card_role not in used_names:
+                used_names[card_role] = set()
+            if card_name in used_names[card_role]:
+                filename = f'{card_name}_{card_id}.png'
+            else:
+                filename = f'{card_name}.png'
+            used_names[card_role].add(card_name)
             card_info.append((
                 f'{card_url}/{card_id}.png',
-                f'./pic/{dir_dict[card_role]}/{card_name}.png',
+                f'{base_dir}/{dir_dict[card_role]}/{filename}',
             ))
 
     return card_info
